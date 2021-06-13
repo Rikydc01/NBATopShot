@@ -370,7 +370,7 @@ ggplot(union(players_partite_Home,players_partite_Away), aes(x=diff, y=prezzo)) 
   )
   
 ```
-Effettivamente anche in questo caso si può notare di come la differenza dei punti nelle partite di ogni collezionabile presente nel dataset non rappresenta alcuna relazione con il prezzo del moments. D'altro canto si può notare di come vi siano parecchie partite che terminano con una differenza reti molto piccola e che caratterizza parecchi collezionabili presenti all'interno della piattaforma.
+Effettivamente anche in questo caso si può notare di come la differenza dei punti nelle partite di ogni collezionabile presente nel dataset non rappresenta alcuna relazione con il prezzo del moments. D'altro canto si può notare di come vi siano parecchie partite che terminano con una differenza reti molto piccola e che caratterizza parecchi collezionabili presenti all'interno della piattaforma. Oltre a questo è interessante notare che il grafico è in maniera approssimativa simmetrica sulla differenza reti uguale a 0, che non presenta valori: significativo anche questo dato, ciò significa che non vi sono stati moments generati in partite finite in parità.
 
 ## Fase di Analisi Carte
 Siamo dunque arrivati all'ultima fase di analisi del nostro fenomeno, che pare essere caratterizzato da una community non particolamente legata alla realtà dei fatti, caratteristici del massimo campionato di Basketball americano.
