@@ -1,0 +1,419 @@
+---
+title: "Progetto Data Science"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+```{r setup, include=FALSE}
+
+# cache results
+knitr::opts_chunk$set(cache=TRUE, echo = TRUE, eval = TRUE, message=FALSE, warning = FALSE, fig.align='center')
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(modelr)
+library(tidyverse)
+library(lubridate)
+library(gganimate)
+library(reactable)
+library(ggdark)
+```
+
+Questo è il mio progetto che ho sviluppato per l'esame di Scienza dei dati: riguarda lo studio di Top Shot NBA, una piattaforma legata alla compravendita di NFTs in merito ai giocatori di basket della massima lega americana.
+
+## Fase di Import
+In questa prima fase (Import) è necessario salvare tutti i dati relativi alla realtà presa in considerazione di cui ho bisogno.
+Ecco per esempio, nba_cards che rappresenta le varie carte collezionabili all'interno della piattaforma in un lasso di tempo ben specifico, nonchè dataset fulcro del mio studio.
+
+```{r echo=TRUE}
+nba_cards = read_csv("../nba/series_info_final.csv")
+```
+
+Nonostante nba_cards sia il dataset più importante, non è l'unico, dato che per effettuare un'analisi appprofondita di quella che è la richiesta minima per ogni collezionabile, è bene che abbia in memoria anche informazioni riguardanti tutti i giocatori dell'edizione di NBA 2020-2021 con tutte le varie statistiche e qualità che li rappresentano. Non solo, un altro dataset molto utile che verrà caricato in una tibble è quello che rappresenta tutte le squadre del campionato alla fine di tutte le partite disputate. Così facendo sarà possibile risalire anche a numerose informazioni della squadra partendo da un moments della piattaforma
+```{r echo=TRUE}
+nba_players = read_csv("../nba/giocatori.CSV")
+nba_squads = read_csv("../nba/datasets/squadre.csv",skip=1)
+```
+Come ultima procedura per questa fase, è necessario caricare l'ultimo dataset per l'analisi, che riguarda le partite disputate in ogni singolo collezionabile, per riuscire a fare uno studio completo del fenomeno, che comprenda anche, una visualizzazione della dipendenza del prezzo in base alla partita disputata in quel giorno li.
+```{r echo=TRUE}
+files_to_read = list.files(
+  path = "../nba/partite/",  # directory in cui cercare
+  pattern = ".*csv$",        # pattern che devo ritrovare in ogni file
+  full.names = TRUE          # restituisco il percorso intero
+)
+data_lst = lapply(files_to_read, read.csv)
+```
+
+## Fase di Tidy
+In questa sezione si tratteranno tutte le operazioni volte principalmente a riordinare e alla normalizzazione dei dati ricavati dai vari file csv e salvati nelle tibble precedentemente. Fortunatamente molti di essi si trovano già in una condizione di normalizzazione, ma non tutti:
+```{r, echo=TRUE}
+#Ho bisogno che la colonna riguardante la data della partita svolta sia strettamente una data per poterci lavorare
+nba_cards = nba_cards %>% mutate(`Moment Date` = mdy(`Moment Date`))
+
+#in questo ciclo svolgo delle operazioni per riuscire ad avere un unico dataset che mi permetta di avere tutte le partite disputate
+partite = data_lst[[1]]
+for(i in 2:length(data_lst)){
+  partite = bind_rows(partite,data_lst[[i]])
+}
+
+#molti dei dati al suo interno non sono particolarmente interessanti, di conseguenza li elimino
+partite = partite %>% select(-X,-Attend.,-X.1,-Notes,-Notes.......)
+
+#A questo punto ho bisogno di una data che sia normalizzata, quindi prima la porto in formato normale e poi la trasformo grazie alla libreria lubridate
+for(i in 1:nrow(partite)){
+  partite$Date[i] = str_sub(partite$Date[i],start = 5)
+}
+partite = partite %>% mutate(Date = mdy(Date))
+
+#Ci sono dei nomi che rappresentano le colonne che non sono particolarmente esaustivi: li modifico
+partite = partite %>% rename(Start = Start..ET.,Away=Visitor.Neutral,APTS=PTS,Home=Home.Neutral,HPTS=PTS.1)
+
+#Si presentava una sottostringa obsoleta all'interno del nome dei giocatori, che è stata opportunamente rimossa
+for(i in 1:nrow(nba_players)){
+  nba_players$Player[i] = strsplit(nba_players$Player[i],"\\\\")[[1]][1]
+}
+
+#Ci sono più giocatori dello stesso tipo perchè nella stagione si sono trasferiti in una nuova squadra: mantengo solamente le statistiche di tali che hanno giocato più minuti
+nba_players =nba_players %>%
+  group_by(Player) %>%
+  arrange(-MP) %>%
+  filter(row_number() == 1)
+```
+Oltre alla normalizzazione dei vari dataset, è bene selezionare solamente le variabili che interessano all'analisi del fenomeno, senza mantenere in memoria dati che non vengono utilizzati e che potrebbero rendere meno efficiente lo studio stesso.
+Per questa ragione in nba_players mantengo il suo nome, le sue caratteristiche tecniche e la squadra in cui gioca.
+Il dataset delle squadre invece possiede variabili molto interessanti, ma inutili per la nostra analisi, le cancellerò.
+```{r}
+nba_players = select(nba_players,-Rk)
+
+#Normalizzo i nomi dei giocatori per poter effettuare facilmente dei join
+nba_players = mutate(nba_players, Player =toupper(Player))
+
+nba_squads = nba_squads %>% select (Rk,Team,Abbr,Conf,W,L,"W/L%")
+```
+
+
+## Fase di Analisi Efficienza Giocatori
+A questo punto, risulta difficile stabilire quale sia il giocatore più forte di tutti, basandosi sui dati che abbiamo; la mia volontà è quella di capire se il prezzo di un giocatore è relazionato alla sua bravura, infatti mi aspetto che il più forte, a parità di rarità della carta, costi molto di più di un giocatore che è nella media. Ma come stabilire un criterio secondo il quale un giocatore è più performante di un altro?
+Grazie al **PER di Hollinger**, studiato appositamente per stabilire un unico coefficiente derivante da una serie di variabili prese da ogni giocatore e stabilite sul campo,
+è possibile fare tutto ciò, permettendoci di sviluppare un criterio grazie al quale ordinare i vari giocatori.
+Calcolare il PER di Hollinger non è assolutamente facile, fortunatamente mi è stato possibile ricavare una semplificazione di esso basato esclusivamente sulle variabili che ho in possesso per ogni giocatore.
+```{r}
+nba_players = mutate(nba_players,PER = ((as.numeric(FG) *85.91)+(as.numeric(STL) *53.897)+
+                                          (as.numeric(`3P`) * 51.757)+(as.numeric(FT) *46.845)+
+                                          (as.numeric(BLK) *39.19)+(as.numeric(ORB) *39.19)+
+                                          (as.numeric(AST)*34.677)+(as.numeric(DRB) *14.707)-
+                                          (as.numeric(PF) *17.174)-((as.numeric(FTA)-
+                                          as.numeric(FT))*20.091)-((as.numeric(FGA)-
+                                          as.numeric(FG))*(39.190)) -(as.numeric(TOV) *53.897))*(1/as.numeric(MP)))
+```
+Ora inizia l'analisi vera e propria del fenomeno, e ottenuto un criterio per classificare i vari giocatori tra di loro, ora mi è possibile prima di tutto ordinarli in base all'efficienza, ed in secondo luogo andare a verificarne una qualche relazione con il prezzo:
+```{r}
+# è il momento di separare le varie carte in base alla rarità che le contraddistinguono in modo da non essere squilibrate
+nba_common_cards = nba_cards %>% filter(nba_cards$`Moment Rarity`=="Common")
+#nba_rare_cards   = nba_cards %>% filter(nba_cards$`Moment Rarity`=="Rare")
+#nba_legend_cards = nba_cards %>% filter(nba_cards$`Moment Rarity`=="Legendary")
+
+
+full_common_cards= filter(nba_players,PER < 37 && PER > 10) %>% inner_join(nba_common_cards, c("Player" = "Player Name"))
+#prova_rare=filter(nba_players,PER < 37 && PER > 10) %>% inner_join(nba_rare_cards, c("Player" = "Player Name"))
+#prova_legend=filter(nba_players,PER < 37 && PER > 10) %>% inner_join(nba_legend_cards, c("Player" = "Player Name"))
+
+
+#Prendo i 25 giocatori più forti ordinati e valuto il loro prezzo
+
+topplayers <- full_common_cards %>% group_by(Player = full_common_cards$Player) %>% summarise(PER = max(PER),"Lowest Ask" = mean(`Lowest Ask`))
+
+top20players <- topplayers %>% arrange(-topplayers$PER) %>% head(20)
+```
+```{r echo=FALSE}
+options(reactable.theme = reactableTheme(
+  color = "hsl(233, 9%, 87%)",
+  backgroundColor = "hsl(233, 9%, 19%)",
+  borderColor = "hsl(233, 9%, 22%)",
+  stripedColor = "hsl(233, 12%, 22%)",
+  highlightColor = "hsl(233, 12%, 24%)",
+  inputStyle = list(backgroundColor = "hsl(233, 9%, 25%)"),
+  selectStyle = list(backgroundColor = "hsl(233, 9%, 25%)")
+))
+
+reactable(top20players,columns = list(PER = colDef(format= colFormat(digits = 2)),
+  `Lowest Ask` = colDef(format = colFormat(digits = 2))),
+  striped = TRUE,
+  highlight = TRUE,
+  style = list(fontFamily = "Roboto, sans-serif", fontSize = "14px")
+)
+```
+Ecco rappresentati i **20 giocatori più forti della stagione 2020-2021**, a questo punto è necessario visualizzare la situazione mediante un grafico, per questa rappresentazione ho puntato ad un **lollipop plot** che permette di assimilare subito, ad ogni giocatore circa la richiesta minima per un suo collezionabile:
+```{r echo =  FALSE}
+data_common <- data.frame(
+  x=top20players$Player,
+  y=top20players$`Lowest Ask`,
+  PER = top20players$PER
+)
+#Scrivo la x che andrò a plottare come fattore, per poter ordinare i livelli in base al PER
+data_common$x <- factor(data_common$x, levels = data_common$x)
+data_common$x <- factor(data_common$x , levels = data_common$x [order(data_common$PER)])
+
+ggplot(data_common, aes(x=x, y=y)) +
+  geom_segment( aes(x=x, xend=x, y=0, yend=y), color="white") +
+  geom_point( color="white", size=4, alpha=1) +
+  theme_light() +
+  coord_flip() +
+  dark_theme_gray()+
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank()
+  )
+```
+
+Come si può notare dal grafico, non ci sono particolari relazioni che legano la bravura del giocatore in termini di efficienza per minuti giocati con il prezzo relativo ad un suo collezionabile. Tuttavia ci sono dei giocatori che costano moltissimo come Lebron James, e altri che comunque si distinguono dalla massa valendo qualche migliaio di dollari.
+Ecco dunque che non siamo di fronte ad una correlazione lineare, perchè provando a stabilire un modello della richiesta minima delle carte, legate al valore di richiesta minima in dollari, ottteniamo che il coefficiente di determinarzione $R^2$ è comunque vicino allo zero e di conseguenza ci conferma che il modello lineare non è aderente ai dati.
+```{r}
+players_by_PER <- topplayers %>% arrange(-topplayers$PER)
+ggplot(data=players_by_PER,aes(x=PER,y=`Lowest Ask`)) +
+      geom_point(
+        color="blue",
+        fill="#69b3a2",
+        shape=20,
+        alpha=0.3,
+        size=2,
+        stroke = 2
+        )+
+  labs(y="Lowest Ask")+
+  geom_smooth(method = "lm")+
+  coord_cartesian(ylim = c(0, 4000))
+
+
+reg <- lm(`Lowest Ask` ~ PER, data = players_by_PER)
+summary(reg)
+```
+
+**Ciò comunque non toglie, che si può evidenziare un interesse leggermente maggiore ai migliori giocatori del campionato**
+
+## Fase di Analisi Efficienza Squadre
+Portando avanti l'analisi riguardante il prezzo per ogni collezionabile, vorrei cercare una risposta al seguente quesito: **la squadra** in cui si trova un giocatore rappresentato in un moments **è determinante per il suo prezzo?** A mio avviso la classifica dovrebbe avere un ruolo abbastanza importante nell'ascesa del prezzo.
+Non vedo perchè un utente neutrale della piattaforma dovrebbe ambire ad ottenere collezionabili di giocatori che militano in squadre ultime in classifica, ma questo è tutto da scoprire.
+```{r}
+#A Regime seleziono i giocatori che costano di più,
+players <- nba_common_cards %>% group_by(Player=`Player Name`,Team=Team) %>% summarise("Lowest Ask" = max(`Lowest Ask`))
+#Essendo le squadre di NBA divise in due Confederazioni, andrò a valutarle in maniera separata
+squads_e <- nba_squads %>%  filter(Conf == "E") %>% arrange(Rk)
+squads_w <- nba_squads %>%  filter(Conf == "W") %>% arrange(Rk)
+
+#Con un join ordino le squadre in base alla classifica e ne ottengo tutti i giocatori che ne fanno parte
+players_squads <- squads_w %>% inner_join(players,by=c("Abbr" = "Team")) %>%   arrange(Rk)
+
+#Ora raggruppo le squadre e calcolo la media del prezzo dei giocatori appartenenti a ciascuna squadra della conf ovest
+rank_squadre <- players_squads %>% group_by(Abbr,Rk) %>% summarise("media Prezzo" = mean(`Lowest Ask`)) %>%  arrange(Rk)
+```
+Ecco che ho raggiunto il risultato che volevo, ho tutte le squadre della "West Conference" ordinate per posizione in classifica e con il prezzo medio di ogni giocatore della propria squadra; a questo punto è necessario visualizzare le informazioni ottenute mediante un grafico.
+```{r}
+# In base alla posizione in classifica
+data_squadre <- data.frame(
+  id=rank_squadre$Rk,
+  individual=rank_squadre$Abbr,
+  value=rank_squadre$`media Prezzo`
+  
+)
+
+data_squadre$individual <- factor(data_squadre$individual, levels = data_squadre$individual)
+data_squadre$individual <- factor(data_squadre$individual , levels = data_squadre$individual [order(data_squadre$id)])
+
+ggplot(data_squadre, aes(x=individual, y=value)) + 
+  geom_bar(stat = "identity",colors="White")+
+  labs(x="West Conference Teams")+
+  labs(y="Lowest Ask")+
+  geom_text(aes(label=individual), position=position_dodge(width=0.9), vjust=-0.25)+
+    coord_cartesian(ylim = c(0, 3500))+
+  dark_theme_gray()+
+    theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
+In realtà la posizione in classifica della squadra non è particolarmente rilevante in termini di prezzo dei vari moments dei propri giocatori; si può osserva che addirittura si presentano delle squadre verso il fondo classifica che spiccano e superano anche le prime: non è infatti un caso perchè queste squadre detengono dei giocatori che sono i più ambiti dagli utenti della piattaforma, giocatori tra cui Lebron James(LAL), Zion Williamson(NOP), Luka Doncic (DAL)... <br>
+La situazione non cambia per quanto riguarda la "East Conference" seppur si possa evidenziare che i prezzi relativi alle carte di questa divisione siano molto più bassi rispetto a quelli della "West Conference" di conseguenza sembrerebbe esserci una **preferenza degli utenti della piattaforma ai giocatori che militano nella "West Conference"**
+```{r echo=FALSE}
+#Con un join ordino le squadre in base alla classifica e ne ottengo tutti i giocatori che ne fanno parte
+players_squads <- squads_e %>% inner_join(players,by=c("Abbr" = "Team")) %>%   arrange(Rk)
+
+#Ora raggruppo le squadre e calcolo la media del prezzo dei giocatori appartenenti a ciascuna squadra della conf ovest
+rank_squadre <- players_squads %>% group_by(Abbr,Rk) %>% summarise("media Prezzo" = mean(`Lowest Ask`)) %>%  arrange(Rk)
+
+data_squadre <- data.frame(
+  id=rank_squadre$Rk,
+  individual=rank_squadre$Abbr,
+  value=rank_squadre$`media Prezzo`
+  
+)
+
+data_squadre$individual <- factor(data_squadre$individual, levels = data_squadre$individual)
+data_squadre$individual <- factor(data_squadre$individual , levels = data_squadre$individual [order(data_squadre$id)])
+
+ggplot(data_squadre, aes(x=individual, y=value)) + 
+  geom_bar(stat = "identity")+
+  labs(x="East Conference Teams")+
+  labs(y="Lowest Ask")+
+  geom_text(aes(label=individual), position=position_dodge(width=0.9), vjust=-0.25)+
+    coord_cartesian(ylim = c(0, 3500))+
+    dark_theme_gray()+
+    theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
+Sebbene la classifica non abbia riservato delle risposte allettanti riguardo la variazione di prezzo dei moments, spinto dalla curiosità mi sono chiesto se tra tutte le carte del dataset ci sono più collezionabili che sono stati generati a seguito di una vittoria oppure di una sconfitta, a mio avviso è molto più probabile che un mint avvenga successivamente ad una vittoria, in quanto ci saranno state probabilmente più occasioni di effettuare delle azioni salienti per la squadra vincente:
+```{r}
+#La rappresentazione di tutte le partite in cui il giocatore militava nella squadra di casa
+carte_partite_Home = (nba_cards %>% inner_join(nba_squads,c("Team"="Abbr"))) %>%  inner_join(partite,c("Moment Date"="Date","Team.y"="Home"))  %>% select("Player Name",`Moment Date`,Home = "Team.y",Away,HPTS,APTS)
+#Le partite in cui invece la squadra del giocatore era quella in trasferta, se le unisco le ottengo tutte.
+carte_partite_Away = (nba_cards %>% inner_join(nba_squads,c("Team"="Abbr"))) %>%  inner_join(partite,c("Moment Date"="Date","Team.y"="Away")) %>% select("Player Name",`Moment Date`,Away = "Team.y",Home,HPTS,APTS)
+
+#trovo le partite in cui il giocatore ha vinto con la sua squadra e quelle in cui a perso per creare il grafico a ciambella
+w<- count(carte_partite_Home %>% filter(HPTS>APTS))+count(carte_partite_Away %>% filter(APTS>HPTS))
+l<- count(carte_partite_Home)+count(carte_partite_Away) - w
+match_wl <- data.frame(
+  category=c("Won", "Lost"),
+  count=c(w[[1]],l[[1]])
+)
+ 
+#Calcolo le percentuali precise
+match_wl$fraction <- match_wl$count / sum(match_wl$count)
+match_wl$ymax <- cumsum(match_wl$fraction)
+match_wl$ymin <- c(0, head(match_wl$ymax, n=-1))
+
+# Posizioni delle 2 label
+match_wl$labelPosition <- (match_wl$ymax + match_wl$ymin) / 2
+match_wl$label <- paste0(match_wl$category, "\n", match_wl$count)
+
+# Creo il plot
+ggplot(match_wl, aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=category)) +
+  geom_rect() +
+  geom_text( x=2, aes(y=labelPosition, label=label, color=category), size=5) + # x here controls label position (inner / outer)
+  scale_fill_brewer(palette=7) +
+  scale_color_brewer(palette=7) +
+  coord_polar(theta="y") +
+  xlim(c(-1, 4)) +
+  theme_void() +
+  dark_theme_gray()+
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.text.x  = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )+
+  theme(legend.position = "none")
+```
+Così è stato infatti! Pare che il 61% circa delle carte nel dataset siano state generate a seguito di una vittoria della squadra del giocatore che ha ricevuto tale collezionabile.
+Ora non resta che capire se sono le partite stesse a determinare, anche solo in parte, il prezzo dei moments: la domanda che mi pongo è quindi se, per esempio i punti di scarto possano determinare un aumento di prezzo della carta oppure se non sia assolutamente un fattore caratterizzante il prezzo.<br> Effettivamente se la differenza reti è sostanziale (cosa che nel basket non succede spesso) significa che la squadra avversaria si ritrova in netto svantaggio, e sarà quindi molto più difficile avere dei giocatori che riescano a ribaltare la partita ricevendo a loro volta un collezionabile da una loro azione saliente; di conseguenza reputo la differenza di punti un fattore che potrebbe arrivare a far variare il prezzo di alcune carte, anche se non di molto.
+
+```{r}
+#Collezionabili che riguardano partite disputate in casa -> calcolo la differenza reti
+carte_partite_Home = (nba_cards %>% inner_join(nba_squads,c("Team"="Abbr"))) %>%  inner_join(partite,c("Moment Date"="Date","Team.y"="Home") )
+players_partite_Home <- data.frame(
+  nome=carte_partite_Home$`Player Name`,
+  Abbr=carte_partite_Home$Team.y,
+  diff=carte_partite_Home$HPTS- carte_partite_Home$APTS,
+  prezzo=carte_partite_Home$`Lowest Ask`
+  
+)
+players_partite_Home<-players_partite_Home %>%  arrange(-diff)
+
+#Collezionabili che riguardano partite disputate fuori casa -> calcolo la differenza reti
+carte_partite_Away = (nba_cards %>% inner_join(nba_squads,c("Team"="Abbr"))) %>%  inner_join(partite,c("Moment Date"="Date","Team.y"="Away") )
+players_partite_Away <- data.frame(
+  nome=carte_partite_Home$`Player Name`,
+  Abbr=carte_partite_Home$Team.y,
+  diff=carte_partite_Home$APTS- carte_partite_Home$HPTS,
+  prezzo=carte_partite_Home$`Lowest Ask`
+  
+)
+players_partite_Away<-players_partite_Away %>%  arrange(-diff)
+
+#Ora che ho tutte le partite,
+ggplot(union(players_partite_Home,players_partite_Away), aes(x=diff, y=prezzo) ) +
+  stat_density_2d(aes(fill = ..density..), geom = "raster", contour = FALSE) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  coord_cartesian(ylim = c(0, 15000))+
+  labs(x="Differenza punti")+
+  theme(
+    legend.position='none'
+  )
+```
+Effettivamente anche in questo caso si può notare di come la differenza dei punti nelle partite di ogni collezionabile presente nel dataset non rappresenta alcuna relazione con il prezzo del moments. D'altro canto si può notare di come vi siano parecchie partite che terminano con una differenza reti molto piccola e che caratterizza parecchi collezionabili presenti all'interno della piattaforma.
+
+## Fase di Analisi Carte
+Siamo dunque arrivati all'ultima fase di analisi del nostro fenomeno, che pare essere caratterizzato da una community non particolamente legata alla realtà dei fatti, caratteristici del massimo campionato di Basketball americano.
+Di conseguenza ora si tratta di capire qual'è il vero significato del prezzo, cosa lo determina se non il fattore realtà legato ad ogni singolo collezionabile?<br>
+Per fare ciò è necessario quindi andare ad analizzare le peculiarità di ogni moments per capire effettivamente perchè una carta dovrebbe valere più di un'altra. (Ci sono collezzionabili che sfiorano le centinaia di migliaia di dollari). Innanzi tutto bisogna dividere tutti i collezionabili per il tipo di rarità e capire cosa succede al prezzo quando si parla in maniera distinta di: collezionabili comuni, rari o leggendari; ovviamente la **variazione di prezzo** è legata al **fattore rarità** e di conseguenza, più raro è, più sarà costoso.
+```{r}
+  ggplot(nba_cards, aes(x=`Moment Rarity`, y=`Lowest Ask`,fill=`Moment Rarity`)) +
+    geom_boxplot(varwidth = TRUE, alpha=0.2) +
+    theme(legend.position="none")+
+    coord_cartesian(ylim = c(0, 15000))+
+      dark_theme_gray()+
+    theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    axis.text.x  = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
+Come si può notare dai boxplots raffigurati, le differenze di prezzo tra le varie rarità sono estreme, questo è il motivo principale per cui, analizzando la realtà dei fatti associata ad ogni carta, ho deciso di selezionare solamente le carte comuni (di un stessa rarità) perchè la maggior parte del dataset e soprattutto che avessere un prezzo quanto meno paritario a livello di un fattore rarità.<br>
+Tralasciando la rarità che è comunque determinante parlando di prezzo della carta, è secondo me fondamentale andare a capire se la dimensione di una edizione di carte è relazionata con il prezzo della stessa: infatti è logico che più la scarsità di un qualsiasi oggetto aumenta e a sua volta lo stesso succede alla richiesta di tale, quindi il prezzo aumenta di conseguenza; andiamo quindi a visualizzare questo comportamento con l'aiuto di un grafico.
+```{r}
+  ggplot(data=nba_cards,aes(x=`Edition Size`,y=`Lowest Ask`)) +
+    geom_point()+
+    coord_cartesian(ylim = c(0, 10000))+
+    dark_theme_gray()+
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
+In questo caso notiamo che al diminuire delle copie disponibili per ogni moments, aumenta notevolmente il prezzo come avevamo stabilito in anticipo. Oltre a questo, il grafico ci fa capire che vi è una maggiore presenza di collezionabili con edizioni prevalentemente limitate, ovvero sotto le 5 mila copie.<br>
+**Confermata la nostra ipotesi** riguardante l'aumento di prezzo rispetto alla scarsità di copie per ogni signolo moments, vorrei visualizzare una caratteristica di ogni carta che presumibilmente farà comprendere meglio l'origine e la tipologia di community che si cela dietro a questo enorme progetto. Infatti la mia idea è di capire se la stessa relazione appena visualizzata vale anche per numero di listing che ha il singolo moments, ovvero in che ordine è stato generato. Infatti a mio avviso, si potrebbe presentare una **tipologia di utenti** strettamente interessati al collezionismo e che quindi **ricercano carte che sono state generate per prime**.<br>
+Il funzionamento è infatti lo stesso per ogni oggetto in edizione limitata, il primo ad essere stato prodotto varrà molto di più rispetto agli altri, semplicemente per un fattore collezionistico; sarà lo stesso per questa tipologia di NFTs? A mio avviso si, vediamolo subito:<br>
+
+```{r}
+ggplot(nba_cards, aes(x=`Num Listings`, y=`Lowest Ask`,color = `Moment Rarity`)) + 
+    geom_point(alpha=0.5)+     coord_cartesian(ylim = c(0, 50000))+
+      dark_theme_gray()+
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+  
+```
+Si riesce quindi ad osservare che nel complesso **l'identificativo del collezionabile** è un **fattore importantissimo** che determina in maniera esponenziale il prezzo del moments. L'identificativo "Num listings" rappresenta quale tra copie uguali dello stesso moments è stato rilasciato e in che ordine: da questo grafico si evince che collezionabili usciti per primi hanno dei prezzi sbalorditivi, senza differenze di rarità (che sia comune, raro o leggendario).
+##Conclusioni
+Arrivati alla conclusioni si è potuto andare a confermare varie ipotesi che si erano stabilite all'inizio dell'analisi e nella fase degli obiettivi, fino a negarne delle altre, tra le quali c'è la relazione tra prezzo e realtà: è quindi evidente che il **fattore realistico non è determinante nel prezzo della carta** e questo ci porta a notare che, dal momento che il collezionismo è molto più sentito nella piattaforma, si presenta una **community strettamente legata al collezionare NFT**, evidentemente per rivenderli in un secondo momento, ma di certo, vi è un minimo interesse verso l'efficenza dei giocatori sul campo, ma soprattutto le squadre che disputano le varie partite del campionato di basketball americano.<br>
+L'intenzione era di stabilire delle strategie che permettessero di avere dei vantaggi rispetto agli altri utenti del sito grazie all'analisi di questo progetto, ma non possono quindi essere legate a nessun fattore riguardanti il campionato reale in generale. Essendo molto più ricercare delle specifiche caratteristiche per ogni moments, la strategia migliore sarebbe quella di acquistare al prezzo più basso collezionabili con queste peculiarità (Num Listings basso oppure comunque edizioni rare di vari moments), così riuscendo a fare del profitto con altri utenti del sito, in quanto vi è un maggior interesse per tali caratteristiche.
