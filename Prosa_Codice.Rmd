@@ -312,7 +312,6 @@ ggplot(match_wl, aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=category)) +
   coord_polar(theta="y") +
   xlim(c(-1, 4)) +
   theme_void() +
-  dark_theme_gray()+
   theme(
     panel.grid.major.y = element_blank(),
     panel.border = element_blank(),
@@ -351,16 +350,25 @@ players_partite_Away <- data.frame(
 )
 players_partite_Away<-players_partite_Away %>%  arrange(-diff)
 
-#Ora che ho tutte le partite,
-ggplot(union(players_partite_Home,players_partite_Away), aes(x=diff, y=prezzo) ) +
-  stat_density_2d(aes(fill = ..density..), geom = "raster", contour = FALSE) +
-  scale_x_continuous(expand = c(0, 0)) +
-  scale_y_continuous(expand = c(0, 0)) +
+ggplot(union(players_partite_Home,players_partite_Away), aes(x=diff, y=prezzo)) + 
+    geom_point(
+        color="orange",
+        fill="orange",
+        shape=21,
+        alpha=0.3,
+        size=3,
+        stroke = 1
+        )+
   coord_cartesian(ylim = c(0, 15000))+
+        dark_theme_gray()+
   labs(x="Differenza punti")+
-  theme(
-    legend.position='none'
+    theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
   )
+  
 ```
 Effettivamente anche in questo caso si può notare di come la differenza dei punti nelle partite di ogni collezionabile presente nel dataset non rappresenta alcuna relazione con il prezzo del moments. D'altro canto si può notare di come vi siano parecchie partite che terminano con una differenza reti molto piccola e che caratterizza parecchi collezionabili presenti all'interno della piattaforma.
 
@@ -414,6 +422,8 @@ ggplot(nba_cards, aes(x=`Num Listings`, y=`Lowest Ask`,color = `Moment Rarity`))
   
 ```
 Si riesce quindi ad osservare che nel complesso **l'identificativo del collezionabile** è un **fattore importantissimo** che determina in maniera esponenziale il prezzo del moments. L'identificativo "Num listings" rappresenta quale tra copie uguali dello stesso moments è stato rilasciato e in che ordine: da questo grafico si evince che collezionabili usciti per primi hanno dei prezzi sbalorditivi, senza differenze di rarità (che sia comune, raro o leggendario).
-##Conclusioni
+
+
+## Conclusioni
 Arrivati alla conclusioni si è potuto andare a confermare varie ipotesi che si erano stabilite all'inizio dell'analisi e nella fase degli obiettivi, fino a negarne delle altre, tra le quali c'è la relazione tra prezzo e realtà: è quindi evidente che il **fattore realistico non è determinante nel prezzo della carta** e questo ci porta a notare che, dal momento che il collezionismo è molto più sentito nella piattaforma, si presenta una **community strettamente legata al collezionare NFT**, evidentemente per rivenderli in un secondo momento, ma di certo, vi è un minimo interesse verso l'efficenza dei giocatori sul campo, ma soprattutto le squadre che disputano le varie partite del campionato di basketball americano.<br>
 L'intenzione era di stabilire delle strategie che permettessero di avere dei vantaggi rispetto agli altri utenti del sito grazie all'analisi di questo progetto, ma non possono quindi essere legate a nessun fattore riguardanti il campionato reale in generale. Essendo molto più ricercare delle specifiche caratteristiche per ogni moments, la strategia migliore sarebbe quella di acquistare al prezzo più basso collezionabili con queste peculiarità (Num Listings basso oppure comunque edizioni rare di vari moments), così riuscendo a fare del profitto con altri utenti del sito, in quanto vi è un maggior interesse per tali caratteristiche.
